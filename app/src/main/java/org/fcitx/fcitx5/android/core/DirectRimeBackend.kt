@@ -68,6 +68,9 @@ class DirectRimeBackend(context: Context) : InputEngine {
     override fun setKeyboardWindowVisible(visible: Boolean) {
         if (!directBootMode && assetPrewarmer.setVisible(visible)) engineScope.launch { requestAssetPrewarm() }
     }
+    override fun onKeyboardTouchStarted() {
+        if (!directBootMode) assetPrewarmer.inputStarted()
+    }
     override fun captureInputKey(): InputKeyGate.Ticket? {
         assetPrewarmer.inputStarted()
         return keyGate.capture { reason ->

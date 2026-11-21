@@ -60,6 +60,7 @@ object FcitxDaemon {
         engine.prepareInputSession(generation, program, flags, needsRime)
     fun requireInputSession(): Boolean = engine.requireInputSession(engine.inputSession)
     fun setKeyboardWindowVisible(visible: Boolean) = engine.setKeyboardWindowVisible(visible)
+    fun onKeyboardTouchStarted() = engine.onKeyboardTouchStarted()
     fun captureInputKey() = engine.captureInputKey()
     fun canDeliverInputKey(ticket: InputKeyGate.Ticket) = engine.canDeliverInputKey(ticket)
     fun releaseInputKey(ticket: InputKeyGate.Ticket) = engine.releaseInputKey(ticket)

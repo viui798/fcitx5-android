@@ -10,6 +10,7 @@ interface InputEngine : FcitxAPI, FcitxLifecycleOwner {
     fun prepareInputSession(generation: Long, program: String, flags: CapabilityFlags, needsRime: Boolean)
     fun requireInputSession(generation: Long): Boolean
     fun setKeyboardWindowVisible(visible: Boolean) {}
+    fun onKeyboardTouchStarted() {}
     fun captureInputKey(): InputKeyGate.Ticket?
     fun canDeliverInputKey(ticket: InputKeyGate.Ticket): Boolean
     fun releaseInputKey(ticket: InputKeyGate.Ticket)

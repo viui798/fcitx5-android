@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -56,6 +57,7 @@ internal class DirectRimeAssetPrewarmer(private val context: Context, private va
         // Resolve the active schema on the caller's native owner after the triggering publication.
         task = scope.launch(start = CoroutineStart.LAZY) {
             try {
+                delay(START_DELAY_MS)
                 val assets = target() ?: return@launch
                 withContext(io) { warm(assets, coroutineContext) }
             } catch (e: CancellationException) {
@@ -138,6 +140,7 @@ internal class DirectRimeAssetPrewarmer(private val context: Context, private va
     }
 
     private companion object {
+        const val START_DELAY_MS = 200L
         const val MAX_BYTES = 512L * 1024 * 1024
         const val CHUNK_BYTES = 1024 * 1024
         const val PRESSURE_CHECK_BYTES = 32L * 1024 * 1024
