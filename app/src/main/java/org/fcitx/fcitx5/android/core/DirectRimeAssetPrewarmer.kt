@@ -20,6 +20,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.fcitx.fcitx5.android.BuildConfig
 import java.io.File
 import java.io.IOException
 import kotlin.coroutines.CoroutineContext
@@ -79,6 +80,11 @@ internal class DirectRimeAssetPrewarmer(private val context: Context, private va
     }
 
     private fun warm(assets: Assets, jobContext: CoroutineContext) {
+        // The emulator toggles this private marker to compare both modes with one diagnostic APK.
+        if (BuildConfig.INPUT_DIAGNOSTICS && context.filesDir.resolve("disable-rime-asset-prewarm").isFile) {
+            Log.i("RimeAssetPrewarm", "diagnostics_disabled=true")
+            return
+        }
         var remaining = budget()
         if (remaining <= 0) return
         val pageSize = Os.sysconf(OsConstants._SC_PAGESIZE).toInt()

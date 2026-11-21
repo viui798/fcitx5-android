@@ -373,9 +373,9 @@ public final class VisualReplay extends Replay {
         if ("true".equals(args.getString("quick"))) {
             evidence.put("quick", true);
         } else {
-            SystemClock.sleep(Integer.parseInt(args.getString("idleBeforeMs", "0")));
             markVideo();
         }
+        SystemClock.sleep(Integer.parseInt(args.getString("idleBeforeMs", "0")));
         JSONObject bounds = new JSONObject(args.getString("bounds"));
         JSONArray words = new JSONArray(args.getString("words"));
         int cadence = Integer.parseInt(args.getString("cadence"));

@@ -20,6 +20,7 @@ PRIVATE = f"/data/user/0/{PACKAGE}/files/benchmark-wanxiang"
 PROFILE_CONF = EXTERNAL + "/config/conf/rime-data-dir.conf"
 ASSET_PROBE = "/data/local/tmp/cyime-asset-residency"
 ASSETS = (WANXIANG_MODEL, "build/wanxiang.table.bin")
+PREWARM_MARKER = f"/data/user/0/{PACKAGE}/files/disable-rime-asset-prewarm"
 
 
 def stop_input():
@@ -85,7 +86,7 @@ def record(output, name, bounds, location, cold, alternate, assets_warm_ms, reso
             if "Tracing is ready" not in ready:
                 raise RuntimeError("Perfetto did not start")
             report = replay(output / name, "direct", bounds, [(pinyin.replace(" ", ""), expected)], 120,
-                            sentence=True, record_video=False, quick=automatic == "immediate",
+                            sentence=True, record_video=False, quick=automatic is not None,
                             idle_before_ms=1500 if automatic == "idle" else 0)
             pid = adb("shell", "pidof", PACKAGE).split()[0]
             maps = adb("shell", "cat", f"/proc/{pid}/maps")
@@ -112,6 +113,7 @@ def record(output, name, bounds, location, cold, alternate, assets_warm_ms, reso
                 logs = adb("logcat", "-d", "-s", "RimeAssetPrewarm:I", "*:S")
                 report["app_prewarm"] = [{"bytes": int(count), "cancelled": cancelled == "true"}
                                          for count, cancelled in re.findall(r"bytes=(\d+) cancelled=(true|false)", logs)]
+                report["diagnostics_disabled_seen"] = "diagnostics_disabled=true" in logs
             report["mapped_model"] = model_paths[0]
             (output / name / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             print(f"{name}: {report}", flush=True)
@@ -121,6 +123,49 @@ def record(output, name, bounds, location, cold, alternate, assets_warm_ms, reso
     if recorder.returncode or not trace.is_file():
         raise RuntimeError(f"Perfetto did not save {name}")
     return report
+
+
+def compare_app_prewarm(output, bounds, uid, original):
+    trial = EXTERNAL + "/data/rime-prewarm-ab"
+    evidence = profile_evidence(original)
+    if evidence.get("./" + WANXIANG_MODEL) != WANXIANG_MODEL_SHA:
+        raise RuntimeError("The A/B profile does not contain the pinned Wanxiang model")
+    (output / "app-prewarm-profile-sha256.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    reports = []
+    try:
+        for timing in ("immediate", "idle"):
+            for pair, order in enumerate(((True, False), (False, True)), start=1):
+                for enabled in order:
+                    storage_profile(output, "app-ab", uid, trial)
+                    # Each trial starts with the same compiled files and a fresh copy of the user DB.
+                    adb("shell", "rm", "-rf", trial)
+                    adb("shell", "mkdir", "-p", trial)
+                    adb("shell", "cp", "-a", original + "/.", trial)
+                    adb("shell", "chown", "-R", f"{uid}:{uid}", trial)
+                    if profile_evidence(trial) != evidence:
+                        raise RuntimeError("The A/B trial profile differs from the baseline")
+                    adb("shell", "rm", "-f", PREWARM_MARKER)
+                    if not enabled:
+                        adb("shell", "touch", PREWARM_MARKER)
+                        adb("shell", "chown", f"{uid}:{uid}", PREWARM_MARKER)
+                        adb("shell", "restorecon", PREWARM_MARKER)
+                    adb("shell", "sync && echo 3 > /proc/sys/vm/drop_caches")
+                    name = f"app-prewarm-{timing}-{pair}-{'on' if enabled else 'off'}"
+                    report = record(output, name, bounds, "app-ab", True, trial, None, None, timing)
+                    reports.append({"case": name, "enabled": enabled, "timing": timing, "pair": pair, **report})
+                    (output / "app-prewarm-ab.json").write_text(json.dumps(reports, ensure_ascii=False, indent=2) + "\n")
+                    if not report["exact_commit"]:
+                        raise RuntimeError(f"{name} failed to commit the expected sentence")
+                    if not enabled and report["app_prewarm"]:
+                        raise RuntimeError(f"{name} read model data despite the disabled marker")
+                    if timing == "idle" and not enabled and not report["diagnostics_disabled_seen"]:
+                        raise RuntimeError(f"{name} did not observe the diagnostic switch")
+                    if timing == "idle" and enabled and not any(event["bytes"] >= 32 * 1024 ** 2 and not event["cancelled"]
+                                                                  for event in report["app_prewarm"]):
+                        raise RuntimeError(f"{name} did not finish a cold asset prewarm")
+    finally:
+        storage_profile(output, "external", uid, trial)
+        adb("shell", "rm", "-f", PREWARM_MARKER)
 
 
 def main():
@@ -149,15 +194,7 @@ def main():
     owner = f"{uid}:{uid}"
     external = EXTERNAL + "/data/rime"
     if args.app_prewarm:
-        for timing in ("idle", "immediate"):
-            storage_profile(output, "external", uid, PRIVATE)
-            adb("shell", "sync && echo 3 > /proc/sys/vm/drop_caches")
-            report = record(output, f"app-prewarm-{timing}", bounds, "external", True, PRIVATE, None, None, timing)
-            if not report["exact_commit"]:
-                raise RuntimeError(f"The {timing} prewarm case failed to commit the expected sentence")
-            if timing == "idle" and not any(event["bytes"] >= 32 * 1024 ** 2 and not event["cancelled"]
-                                           for event in report["app_prewarm"]):
-                raise RuntimeError("The visible, idle keyboard did not finish a cold asset prewarm")
+        compare_app_prewarm(output, bounds, uid, external)
         return
     alternate = EXTERNAL + "/data/rime-warmed" if args.prewarm else PRIVATE
     adb("shell", "mkdir", "-p", alternate)

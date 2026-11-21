@@ -93,6 +93,7 @@ jobs:
         if: env.BENCH_PATCHED != ''
         env:
           BUILD_ABI: x86_64
+          ORG_GRADLE_PROJECT_inputDiagnostics: ${{ matrix.storage == 'app-prewarm' && 'true' || 'false' }}
         run: |
           python3 tools/prepare-ci-ndk.py
           bash tools/foxy-perf/build-release.sh "$RUNNER_TEMP/direct-product"
