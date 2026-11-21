@@ -28,8 +28,8 @@ def run(output, label, bounds, mode):
     if "status=ok" not in response:
         return {"failure": response}
     evidence = json.loads((directory / "touches.json").read_text())
-    preedit = next((item["text"].split("|")[0].strip() for item in evidence["overlap_candidates"]
-                    if item["text"].startswith(("zhong guo", "zhon guo", "ma an", "maan", "man"))), None)
+    preedits = (item["text"].split("|")[0].strip() for item in evidence["overlap_candidates"])
+    preedit = next((text for text in preedits if text.replace(" ", "") in ("zhongguo", "zhonguo", "zhonuo", "maan", "man")), None)
     return {"text": evidence["output"], "preedit": preedit,
             "overlap_events": [event for event in evidence["touches"] if "action" in event]}
 
@@ -55,13 +55,14 @@ def main():
     if any("failure" in result for pair in results.values() for result in pair.values()):
         raise RuntimeError("An overlap replay could not inject its touches")
     if args.expect_handover:
-        for mode in ("cancel-second", "macro-sequential", "macro-overlap"):
+        for mode in ("no-g", "cancel-both", "cancel-older", "cancel-newer", "macro-sequential", "macro-overlap"):
             results[mode] = {"direct": run(args.output, "direct", products["direct"]["bounds"], mode)}
         (args.output / "overlap-results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n")
-        expected = {"sequential": "zhong guo", "one-g": "zhon guo", "older-up-first": "zhong guo",
-                    "newer-up-first": "zhong guo", "cancel-second": "zhon guo"}
+        expected = {"sequential": "zhongguo", "one-g": "zhonguo", "no-g": "zhonuo",
+                    "older-up-first": "zhongguo", "newer-up-first": "zhongguo",
+                    "cancel-both": "zhonuo", "cancel-older": "zhonguo", "cancel-newer": "zhonguo"}
         for mode, preedit in expected.items():
-            if results[mode]["direct"].get("preedit") != preedit:
+            if (results[mode]["direct"].get("preedit") or "").replace(" ", "") != preedit:
                 raise RuntimeError(f"{mode}: expected {preedit}, observed {results[mode]['direct']}")
         macro_pinyin = results["macro-sequential"]["direct"].get("preedit")
         if not macro_pinyin or macro_pinyin.replace(" ", "") != "maan" or results["macro-overlap"]["direct"].get("preedit") != macro_pinyin:

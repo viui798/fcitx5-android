@@ -130,7 +130,10 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
     private val touchSlop: Float = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
     internal var letterTapHandoverEnabled = false
     private var tapPointerId = -1
-    private var handlingTapHandover = false
+    private var trackingOverlappingTap = false
+    private var overlappingTap: OverlappingTap? = null
+
+    private data class OverlappingTap(val pointerId: Int, val x: Float, val y: Float, val downTime: Long)
 
     init {
         // disable system sound effect and haptic feedback
@@ -195,63 +198,105 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
     }
 
     fun cancelGestures() {
+        resetTapPointers()
+        cancelPress()
+    }
+
+    private fun cancelPress() {
         isPressed = false
         resetState()
-        tapPointerId = -1
-        handlingTapHandover = false
         // reset double tap state on cancel; unconditional for the same reason as resetState
         maybeDoubleTap = false
         lastClickTime = 0
     }
 
+    private fun resetTapPointers() {
+        tapPointerId = -1
+        trackingOverlappingTap = false
+        overlappingTap = null
+    }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
         if (action == MotionEvent.ACTION_DOWN) {
-            handlingTapHandover = false
+            resetTapPointers()
             tapPointerId = if (letterTapHandoverEnabled) event.getPointerId(0) else -1
         }
         if (action == MotionEvent.ACTION_CANCEL) {
-            // Android may synthesize cancel without the active pointer ID.
-            // Let the normal cancellation path dismiss the press and popup.
-            handlingTapHandover = false
-            tapPointerId = -1
+            resetTapPointers()
             return super.dispatchTouchEvent(event)
         }
-        if (action == MotionEvent.ACTION_POINTER_DOWN && letterTapHandoverEnabled && isEnabled) {
+        if (!trackingOverlappingTap && (action != MotionEvent.ACTION_POINTER_DOWN || tapPointerId < 0)) {
+            return super.dispatchTouchEvent(event)
+        }
+        val primary = if (tapPointerId >= 0) event.findPointerIndex(tapPointerId) else -1
+        if (action == MotionEvent.ACTION_POINTER_DOWN && letterTapHandoverEnabled && isEnabled &&
+            overlappingTap == null && primary >= 0 && isUnmovedLetterTap(event, primary)
+        ) {
             val next = event.actionIndex
-            val old = event.findPointerIndex(tapPointerId)
-            val newX = event.getX(next)
-            val newY = event.getY(next)
-            if (newX >= 0 && newX < width && newY >= 0 && newY < height &&
-                (old >= 0 && isUnmovedLetterTap(event, old) || old < 0 && handlingTapHandover)
-            ) {
-                val keyParent = parent
-                handlingTapHandover = true
-                // Android sends both fingers to one child when the second taps
-                // the same key. Finish the first tap before handing it over.
-                if (old >= 0) dispatchSingleTouch(event, old, MotionEvent.ACTION_UP)
-                tapPointerId = -1
-                if (isEnabled && letterTapHandoverEnabled && parent === keyParent) {
-                    tapPointerId = event.getPointerId(next)
-                    dispatchSingleTouch(event, next, MotionEvent.ACTION_DOWN)
-                }
+            val x = event.getX(next)
+            val y = event.getY(next)
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                // Let the first press finish normally, even if the second finger comes up first.
+                // Neither press may send a letter until its own release has been confirmed.
+                overlappingTap = OverlappingTap(event.getPointerId(next), x, y, event.eventTime)
+                trackingOverlappingTap = true
                 return true
             }
         }
-        if (!handlingTapHandover) return super.dispatchTouchEvent(event)
+        if (!trackingOverlappingTap) return super.dispatchTouchEvent(event)
 
-        val pointer = event.findPointerIndex(tapPointerId)
         when (action) {
-            MotionEvent.ACTION_MOVE -> if (pointer >= 0) dispatchSingleTouch(event, pointer, action)
-            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
-                if (pointer >= 0 && event.actionIndex == pointer) {
-                    dispatchSingleTouch(event, pointer, MotionEvent.ACTION_UP)
-                    tapPointerId = -1
+            MotionEvent.ACTION_MOVE -> {
+                val tap = overlappingTap
+                if (tap != null && !isOverlappingTapWithinSlop(event, event.findPointerIndex(tap.pointerId), tap)) {
+                    overlappingTap = null
                 }
-                if (action == MotionEvent.ACTION_UP) handlingTapHandover = false
+                if (primary >= 0) dispatchSingleTouch(event, primary, action)
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
+                val released = event.actionIndex
+                val cancelled = event.flags and MotionEvent.FLAG_CANCELED != 0
+                if (released == primary) {
+                    val keyParent = parent
+                    tapPointerId = -1
+                    dispatchSingleTouch(event, primary, if (cancelled) MotionEvent.ACTION_CANCEL else MotionEvent.ACTION_UP)
+                    // A finger that stays down can now use this key's regular gesture handling.
+                    val tap = overlappingTap
+                    if (tap != null && isEnabled && letterTapHandoverEnabled && parent === keyParent) {
+                        val next = event.findPointerIndex(tap.pointerId)
+                        if (isOverlappingTapWithinSlop(event, next, tap)) {
+                            overlappingTap = null
+                            tapPointerId = tap.pointerId
+                            dispatchSingleTouch(event, next, MotionEvent.ACTION_DOWN)
+                        }
+                    }
+                } else {
+                    val tap = overlappingTap
+                    if (tap != null && event.getPointerId(released) == tap.pointerId) {
+                        overlappingTap = null
+                        if (!cancelled && isEnabled && letterTapHandoverEnabled &&
+                            event.eventTime - tap.downTime in 0L..ViewConfiguration.getTapTimeout().toLong() &&
+                            isOverlappingTapWithinSlop(event, released, tap)
+                        ) onConfirmedOverlappingTap(tap.x, tap.y)
+                    }
+                }
+                if (action == MotionEvent.ACTION_UP) resetTapPointers()
             }
         }
         return true
+    }
+
+    private fun isOverlappingTapWithinSlop(event: MotionEvent, pointer: Int, tap: OverlappingTap): Boolean {
+        if (pointer < 0) return false
+        return abs(event.getX(pointer) - tap.x) <= touchSlop && abs(event.getY(pointer) - tap.y) <= touchSlop
+    }
+
+    protected open fun onConfirmedOverlappingTap(x: Float, y: Float) {
+        InputFeedbacks.hapticFeedback(this)
+        InputFeedbacks.soundEffect(soundEffect)
+        InputFeedbacks.hapticFeedback(this, longPress = true, keyUp = true)
+        performClick()
     }
 
     private fun isUnmovedLetterTap(event: MotionEvent, pointer: Int): Boolean {
@@ -271,7 +316,7 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
             if (action == MotionEvent.ACTION_DOWN) event.eventTime else pressDownTime,
             event.eventTime, action, 1, arrayOf(properties), arrayOf(coords), event.metaState,
             event.buttonState, event.xPrecision, event.yPrecision, event.deviceId, event.edgeFlags,
-            event.source, event.flags
+            event.source, if (action == MotionEvent.ACTION_DOWN) event.flags and MotionEvent.FLAG_CANCELED.inv() else event.flags
         )
         try {
             super.dispatchTouchEvent(single)
@@ -465,7 +510,7 @@ open class CustomGestureView(ctx: Context) : FrameLayout(ctx) {
                 if (!holdSwipeEnabled || holdSwipeArmed) {
                     dispatchGestureEvent(GestureType.Up, event.x, event.y)
                 }
-                cancelGestures()
+                cancelPress()
                 return true
             }
         }
